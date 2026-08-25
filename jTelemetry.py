@@ -1,5 +1,5 @@
 '''
-jTelemetry_v006
+jTelemetry_v007
 Author: Jensen Abler & Claude
 Date: 8/25/2026
 Description: General-purpose Maya script profiler. Wraps maya.cmds and maya.mel.eval
@@ -353,7 +353,7 @@ def profile_shelf(label, top=15):
             return profile_code(code, top=top,
                                 description="shelf button %r" % label)
     raise ValueError("no shelf button labeled %r found (saw: %s)"
-                     % (label, ", ".join(sorted(set(seen))) or "none"))
+                     % (label, ", ".join(sorted(dict.fromkeys(seen))) or "none"))
 
 
 # ---- shelf tool UI ---------------------------------------------------------
