@@ -1,5 +1,5 @@
 '''
-jTelemetry_v003
+jTelemetry_v004
 Author: Jensen Abler & Claude
 Date: 8/25/2026
 Description: General-purpose Maya script profiler. Wraps maya.cmds and maya.mel.eval
@@ -8,31 +8,25 @@ time went: total wall time, cumulative time per command, slowest individual call
 and per-line hotspots in the profiled script. No disk files involved: profile
 from a GitHub URL, a shelf button, a pasted string, or an interpreter function.
 
-Usage (paste this whole file into a Python tab in Maya's Script Editor, then):
+Shelf tool: paste this whole file into a shelf button's Python command (or a
+Script Editor tab) and run it. A window opens with a text box - paste any of:
 
-    profile_url("https://github.com/JensenAbler/J-Link/blob/master/linkLights.py")
+    a shelf button label          linkLights
+    an interpreter function       my_function
+    a GitHub URL                  https://github.com/JensenAbler/J-Link/blob/master/linkLights.py
+    a script                      (any multi-line pasted code)
 
-github.com "blob" URLs are converted to raw automatically, so just paste the
-URL from your browser.
+and click Profile. The input kind is detected automatically and the report
+appears in the window (and the Script Editor).
 
-Air-gapped workstations (no network) — profile a shelf button's Python
-command by the button's label:
+The underlying functions are also callable directly:
 
-    profile_shelf("linkLights")
+    profile_shelf("linkLights")     # air-gap friendly, no network
+    profile_call(my_function)       # air-gap friendly, no network
+    profile_code("<pasted code>")   # air-gap friendly, no network
+    profile_url(url)                # github.com blob URLs auto-convert to raw
 
-or paste code directly:
-
-    profile_code(""\"
-    <paste any script here>
-    ""\")
-
-or profile a function already defined in the interpreter:
-
-    profile_call(my_function)
-
-Options:
-
-    profile_url(url, top=15)   # rows per report table
+Options: every entry point takes top=N for rows per report table.
 '''
 import sys
 import time
@@ -73,6 +67,7 @@ class Telemetry(object):
         self.wall_start = None
         self.wall_end = None
         self.error = None
+        self.report_text = None
 
     # ---- capture -----------------------------------------------------------
 
@@ -259,7 +254,8 @@ def profile_code(code, top=15, description=None):
     _run(telemetry, _thunk)
     if description:
         print("Profiled: %s" % description)
-    print(telemetry.report(script_lines=script_lines, top=top))
+    telemetry.report_text = telemetry.report(script_lines=script_lines, top=top)
+    print(telemetry.report_text)
     return telemetry
 
 
@@ -272,7 +268,8 @@ def profile_call(func, top=15):
     telemetry = Telemetry()
     _run(telemetry, func)
     print("Profiled: %s" % getattr(func, "__name__", repr(func)))
-    print(telemetry.report(top=top))
+    telemetry.report_text = telemetry.report(top=top)
+    print(telemetry.report_text)
     return telemetry
 
 
@@ -309,6 +306,80 @@ def profile_shelf(label, top=15):
                                 description="shelf button %r" % label)
     raise ValueError("no shelf button labeled %r found (saw: %s)"
                      % (label, ", ".join(sorted(set(seen))) or "none"))
+
+
+# ---- shelf tool UI ---------------------------------------------------------
+
+def profile_auto(text, top=15):
+    '''Detect what was pasted and profile it: multi-line text is code, an
+    http(s)/github link is a URL, the name of a callable defined in the
+    interpreter is a function, anything else is a shelf button label.
+    Returns the Telemetry object.'''
+    text = text.strip()
+    if not text:
+        raise ValueError("nothing to profile - paste a shelf button label, "
+                         "function name, GitHub URL, or code")
+    if "\n" in text:
+        return profile_code(text, top=top, description="pasted code")
+    if text.startswith(("http://", "https://")) or "github.com" in text:
+        return profile_url(text, top=top)
+    name = text[:-2] if text.endswith("()") else text
+    import __main__
+    func = getattr(__main__, name, None)
+    if callable(func):
+        return profile_call(func, top=top)
+    return profile_shelf(text, top=top)
+
+
+_WINDOW = "jTelemetryWindow"
+
+
+def show():
+    '''Open the jTelemetry window: an input box plus a report pane.'''
+    if maya is None:
+        raise RuntimeError("maya module not available")
+    if maya.cmds.window(_WINDOW, exists=True):
+        maya.cmds.deleteUI(_WINDOW)
+    window = maya.cmds.window(_WINDOW, title="jTelemetry",
+                              widthHeight=(720, 540))
+    form = maya.cmds.formLayout(parent=window)
+    prompt = maya.cmds.text(
+        parent=form, align="left",
+        label="Paste a shelf button label, interpreter function, GitHub URL,"
+              " or a whole script:")
+    input_field = maya.cmds.scrollField(parent=form, height=70, wordWrap=False)
+    report_field = maya.cmds.scrollField(parent=form, editable=False,
+                                         wordWrap=False, font="fixedWidthFont",
+                                         text="Report appears here.")
+
+    def _on_profile(*_):
+        pasted = maya.cmds.scrollField(input_field, query=True, text=True)
+        try:
+            telemetry = profile_auto(pasted)
+            report = telemetry.report_text
+        except Exception as exc:
+            report = "ERROR: %s" % exc
+        maya.cmds.scrollField(report_field, edit=True, text=report)
+
+    button = maya.cmds.button(parent=form, label="Profile",
+                              command=_on_profile)
+    maya.cmds.formLayout(
+        form, edit=True,
+        attachForm=[(prompt, "top", 8), (prompt, "left", 8),
+                    (prompt, "right", 8),
+                    (input_field, "left", 8), (input_field, "right", 8),
+                    (button, "left", 8), (button, "right", 8),
+                    (report_field, "left", 8), (report_field, "right", 8),
+                    (report_field, "bottom", 8)],
+        attachControl=[(input_field, "top", 6, prompt),
+                       (button, "top", 6, input_field),
+                       (report_field, "top", 6, button)])
+    maya.cmds.showWindow(window)
+    return window
+
+
+if __name__ == "__main__" and maya is not None:
+    show()
 
 
 def _to_raw_url(url):
