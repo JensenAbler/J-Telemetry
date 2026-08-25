@@ -1,5 +1,5 @@
 '''
-jTelemetry_v004
+jTelemetry_v005
 Author: Jensen Abler & Claude
 Date: 8/25/2026
 Description: General-purpose Maya script profiler. Wraps maya.cmds and maya.mel.eval
@@ -378,7 +378,9 @@ def show():
     return window
 
 
-if __name__ == "__main__" and maya is not None:
+# Open the window on paste/run, like any other shelf tool. The guard only
+# exists so the file can be imported outside Maya for testing.
+if maya is not None:
     show()
 
 
