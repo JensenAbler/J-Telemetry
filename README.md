@@ -31,6 +31,24 @@ profile_code("""
 `top=N` controls rows per report table. The wrappers are always removed
 afterward, even if the profiled script errors or calls `sys.exit()`.
 
+## Air-gapped workstations
+
+No network needed — on offline machines your scripts already live in the
+shelf or the interpreter, and the profiler reads from both:
+
+```python
+profile_shelf("linkLights")   # profiles a shelf button's Python command,
+                              # found by the button's label
+```
+
+```python
+profile_call(my_function)     # profiles a function already defined in the
+                              # interpreter (no per-line hotspots in this mode)
+```
+
+`profile_code` also works fully offline with any pasted script. Only
+`profile_url` requires a connection.
+
 ## The report
 
 - **Total wall time** vs. **time inside cmds/mel** — how much is Maya calls

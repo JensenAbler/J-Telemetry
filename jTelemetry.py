@@ -1,23 +1,34 @@
 '''
-jTelemetry_v002
+jTelemetry_v003
 Author: Jensen Abler & Claude
 Date: 8/25/2026
 Description: General-purpose Maya script profiler. Wraps maya.cmds and maya.mel.eval
 with timing and call-counting, runs any script unmodified, and reports where the
 time went: total wall time, cumulative time per command, slowest individual calls,
 and per-line hotspots in the profiled script. No disk files involved: profile
-straight from a GitHub URL or a pasted string.
+from a GitHub URL, a shelf button, a pasted string, or an interpreter function.
 
 Usage (paste this whole file into a Python tab in Maya's Script Editor, then):
 
     profile_url("https://github.com/JensenAbler/J-Link/blob/master/linkLights.py")
 
 github.com "blob" URLs are converted to raw automatically, so just paste the
-URL from your browser. Or profile pasted code directly:
+URL from your browser.
+
+Air-gapped workstations (no network) — profile a shelf button's Python
+command by the button's label:
+
+    profile_shelf("linkLights")
+
+or paste code directly:
 
     profile_code(""\"
     <paste any script here>
     ""\")
+
+or profile a function already defined in the interpreter:
+
+    profile_call(my_function)
 
 Options:
 
@@ -218,6 +229,19 @@ class _Patcher(object):
         return wrapper
 
 
+def _run(telemetry, thunk):
+    '''Run thunk with the patcher active, capturing errors into telemetry.'''
+    telemetry.wall_start = time.time()
+    with _Patcher(telemetry):
+        try:
+            thunk()
+        except SystemExit:
+            telemetry.error = "SystemExit (script called sys.exit)"
+        except Exception:
+            telemetry.error = traceback.format_exc().splitlines()[-1]
+    telemetry.wall_end = time.time()
+
+
 def profile_code(code, top=15, description=None):
     '''Profile a string of Python code. Returns the Telemetry object.'''
     if maya is None:
@@ -230,19 +254,61 @@ def profile_code(code, top=15, description=None):
         "maya": maya,
         "jtel_section": telemetry.section,
     }
-    telemetry.wall_start = time.time()
-    with _Patcher(telemetry):
-        try:
-            exec(compiled, scope)
-        except SystemExit:
-            telemetry.error = "SystemExit (script called sys.exit)"
-        except Exception:
-            telemetry.error = traceback.format_exc().splitlines()[-1]
-    telemetry.wall_end = time.time()
+    def _thunk():
+        exec(compiled, scope)
+    _run(telemetry, _thunk)
     if description:
         print("Profiled: %s" % description)
     print(telemetry.report(script_lines=script_lines, top=top))
     return telemetry
+
+
+def profile_call(func, top=15):
+    '''Profile a zero-argument callable already defined in the interpreter.
+    Per-line hotspots are not available in this mode; the per-command and
+    slowest-call tables are. Returns the Telemetry object.'''
+    if maya is None:
+        raise RuntimeError("maya module not available")
+    telemetry = Telemetry()
+    _run(telemetry, func)
+    print("Profiled: %s" % getattr(func, "__name__", repr(func)))
+    print(telemetry.report(top=top))
+    return telemetry
+
+
+def profile_shelf(label, top=15):
+    '''Profile a shelf button's Python command, found by the button's label
+    (also matches its overlay text or name). Works fully offline. Returns
+    the Telemetry object.'''
+    if maya is None:
+        raise RuntimeError("maya module not available")
+    top_shelf = maya.mel.eval("$jtelTmp = $gShelfTopLevel")
+    shelves = maya.cmds.tabLayout(top_shelf, query=True, childArray=True) or []
+    seen = []
+    for shelf in shelves:
+        buttons = maya.cmds.shelfLayout(shelf, query=True, childArray=True) or []
+        for button in buttons:
+            try:
+                names = (
+                    maya.cmds.shelfButton(button, query=True, label=True),
+                    maya.cmds.shelfButton(button, query=True,
+                                          imageOverlayLabel=True),
+                    button,
+                )
+            except Exception:
+                continue  # not a shelfButton (separators etc.)
+            seen.extend(n for n in names[:2] if n)
+            if label not in names:
+                continue
+            source = maya.cmds.shelfButton(button, query=True, sourceType=True)
+            if source != "python":
+                raise ValueError("shelf button %r is %s, not python"
+                                 % (label, source))
+            code = maya.cmds.shelfButton(button, query=True, command=True)
+            return profile_code(code, top=top,
+                                description="shelf button %r" % label)
+    raise ValueError("no shelf button labeled %r found (saw: %s)"
+                     % (label, ", ".join(sorted(set(seen))) or "none"))
 
 
 def _to_raw_url(url):
