@@ -1,12 +1,14 @@
 '''
-jTelemetry_v005
+jTelemetry_v006
 Author: Jensen Abler & Claude
 Date: 8/25/2026
 Description: General-purpose Maya script profiler. Wraps maya.cmds and maya.mel.eval
 with timing and call-counting, runs any script unmodified, and reports where the
 time went: total wall time, cumulative time per command, slowest individual calls,
-and per-line hotspots in the profiled script. No disk files involved: profile
-from a GitHub URL, a shelf button, a pasted string, or an interpreter function.
+per-line hotspots in the profiled script, and which code OUTSIDE the script
+(plugin callbacks, scriptJobs) is making calls behind its back. No disk files
+involved: profile from a GitHub URL, a shelf button, a pasted string, or an
+interpreter function.
 
 Shelf tool: paste this whole file into a shelf button's Python command (or a
 Script Editor tab) and run it. A window opens with a text box - paste any of:
@@ -45,14 +47,25 @@ except ImportError:
     maya = None  # Allows self-test outside Maya with a stubbed maya module.
 
 
-class _CallRecord(object):
-    __slots__ = ("command", "duration", "lineno", "arg_preview")
+# Filename our own frames carry (a real path, or the console's name when
+# pasted) - used to skip harness frames during caller attribution.
+_HARNESS_FILE = sys._getframe().f_code.co_filename
 
-    def __init__(self, command, duration, lineno, arg_preview):
+
+def _short_path(filename):
+    parts = filename.replace("\\", "/").rsplit("/", 3)
+    return "/".join(parts[1:]) if len(parts) > 1 else filename
+
+
+class _CallRecord(object):
+    __slots__ = ("command", "duration", "lineno", "arg_preview", "caller")
+
+    def __init__(self, command, duration, lineno, arg_preview, caller):
         self.command = command
         self.duration = duration
         self.lineno = lineno
         self.arg_preview = arg_preview
+        self.caller = caller
 
 
 class Telemetry(object):
@@ -72,17 +85,26 @@ class Telemetry(object):
     # ---- capture -----------------------------------------------------------
 
     def record(self, command, duration, arg_preview):
-        lineno = self._caller_lineno()
-        self.records.append(_CallRecord(command, duration, lineno, arg_preview))
-
-    def _caller_lineno(self):
-        '''Line number in the profiled script that triggered this call, or None.'''
-        frame = sys._getframe(2)  # skip record() and the wrapper
+        '''Attribute the call to a line of the profiled script, and - when the
+        immediate caller is code outside the script (a plugin callback, a
+        scriptJob, ...) - to that external caller's file and function.'''
+        lineno = None
+        caller = None
+        frame = sys._getframe(1)
         while frame is not None:
-            if frame.f_code.co_filename == self.SCRIPT_FILENAME:
-                return frame.f_lineno
+            filename = frame.f_code.co_filename
+            if filename == _HARNESS_FILE:
+                frame = frame.f_back
+                continue
+            if filename == self.SCRIPT_FILENAME:
+                lineno = frame.f_lineno
+                break
+            if caller is None:
+                caller = "%s  %s()" % (_short_path(filename),
+                                       frame.f_code.co_name)
             frame = frame.f_back
-        return None
+        self.records.append(_CallRecord(command, duration, lineno,
+                                        arg_preview, caller))
 
     def section(self, name):
         return _Section(self, name)
@@ -127,6 +149,32 @@ class Telemetry(object):
         for command, (count, total, peak) in ranked[:top]:
             add("%-28s %8d %10.3f %10.2f %10.2f"
                 % (command[:28], count, total, total / count * 1000, peak * 1000))
+
+        # External callers: calls made by code outside the profiled script
+        # (plugin callbacks, scriptJobs, ...), grouped by caller function.
+        by_caller = {}
+        for r in self.records:
+            if r.caller is None:
+                continue
+            commands = by_caller.setdefault(r.caller, {})
+            entry = commands.setdefault(r.command, [0, 0.0])
+            entry[0] += 1
+            entry[1] += r.duration
+        if by_caller:
+            totals = []
+            for caller, commands in by_caller.items():
+                count = sum(c[0] for c in commands.values())
+                total = sum(c[1] for c in commands.values())
+                lead = max(commands.items(), key=lambda kv: kv[1][1])
+                totals.append((total, count, caller, lead[0], lead[1][0]))
+            totals.sort(reverse=True)
+            add("")
+            add("-- External callers (code outside the profiled script) ------")
+            add("%8s %10s  %s" % ("calls", "total s", "caller / top command"))
+            for total, count, caller, lead_cmd, lead_count in totals[:top]:
+                add("%8d %10.3f  %s" % (count, total, caller))
+                add("%8s %10s    mostly %s (%d calls)"
+                    % ("", "", lead_cmd, lead_count))
 
         # Slowest individual calls
         slowest = sorted(self.records, key=lambda r: r.duration, reverse=True)
